@@ -130,13 +130,10 @@ public void setActive(boolean c){
 
     @Override
     public boolean equals(Object obj) {
+        if (this == obj) return true;
+        if (!(obj instanceof Staff)) return false;
         Staff s1 = (Staff) obj;
-        if(s1.name.equals(this.name) && s1.staffId==this.staffId){
-            return true;
-        }
-
-        return false;
-
+        return s1.name.equals(this.name) && s1.staffId == this.staffId;
     }
     @Override
     public void setNewName(String name){
