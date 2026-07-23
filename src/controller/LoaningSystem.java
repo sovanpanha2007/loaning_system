@@ -200,6 +200,13 @@ public class LoaningSystem {
             return;
         }
 
+        if (!checkIfUsernameAvailable(userName)) {
+            throw new InputMismatchException("Error : username already taken");
+        }
+        if (!checkIfPhoneNumerAvailable(phoneNumber)) {
+            throw new InputMismatchException("Error : phone number already registered");
+        }
+
         Staff newStaff;
         if (position.equals(LoaningSystem.MANAGER)) {
             newStaff = new Manager(name ,userName,phoneNumber,age,password, salary,1);
@@ -226,11 +233,11 @@ public class LoaningSystem {
             setLastMessage("Error: Applicant name cannot be empty.");
             return;
         }
-        for(int i=0;i<applicants.size();i++){
-            Applicant applicant = applicants.get(i);
-            if(applicant.getUsername().equals(userName) || applicant.getPhoneNumber().equals(phoneNumber)){
-                throw new InputMismatchException("Error : account already existed");
-            }
+        if (!checkIfUsernameAvailable(userName)) {
+            throw new InputMismatchException("Error : username already taken");
+        }
+        if (!checkIfPhoneNumerAvailable(phoneNumber)) {
+            throw new InputMismatchException("Error : phone number already registered");
         }
 
         applicants.add(new Applicant(name,userName,phoneNumber,password, gender, income, age));
@@ -273,8 +280,9 @@ public class LoaningSystem {
 
 
         Contract contract = new Contract(applicant, amount, duration, currentInterestRate);
-        Staff officer = (LoanOfficer) loggedInUser;
-        contract.setDraftingOfficer(officer);
+        if (loggedInUser instanceof Staff) {
+            contract.setDraftingOfficer((Staff) loggedInUser);
+        }
         contracts.add(contract);
         setLastMessage("Contract created successfully. ID: " + contract.getContractId());
     }
@@ -471,6 +479,9 @@ public class LoaningSystem {
 
         if(loggedInUser.getUsername().equalsIgnoreCase(username) && loggedInUser.checkPassword(password)){
 
+                if (!checkIfUsernameAvailable(newUsername)) {
+                    throw new InputMismatchException("Error : username already taken");
+                }
                 loggedInUser.setUsername(newUsername);
                 System.out.println("Successfully change username ");
                 return;
