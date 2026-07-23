@@ -134,14 +134,17 @@ public class LoaningSystem {
         if(!requireLogin()) return;
         if(!requirePermission(LoaningSystem.VIEW_OWN_CONTRACT)) return;
 
+      boolean found = false;
       for(int i=0;i<contracts.size();i++){
            Contract contract = contracts.get(i);
            if(loggedInUser.getId() == contract.getApplicant().getId()){
                System.out.println(contract.toString());
-               return;
+               found = true;
            }
       }
-      setLastMessage("Error : Contract not found");
+      if (!found) {
+          setLastMessage("Error : Contract not found");
+      }
     }
 
     public void login(String name, String password) {
@@ -309,7 +312,7 @@ public class LoaningSystem {
         if(officer.canContractApprove(officer,contract)){
              PaymentSchedule schedule = new PaymentSchedule(contract);
             schedules.add(schedule);
-            LoaningSystem.setLastMessage("Contract #" + contract.getContractId() + " approved by Loan Officer: " + officer.getName() + " generate schedule for payment : " + schedule.getScheduleId());
+            LoaningSystem.setLastMessage("Contract #" + contract.getContractId() + " approved by " + officer.getPosition() + ": " + officer.getName() + " generate schedule for payment : " + schedule.getScheduleId());
         }
             
         
