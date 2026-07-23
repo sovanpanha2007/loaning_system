@@ -44,7 +44,7 @@ public class Main {
                     case 9:  handleDeactivateStaff();  break;
                     case 10: system.printStaffs();     break;
                     case 11: system.printApplicants(); break;
-                    case 12: system.printContracts();  break;
+                    case 12: if (isUser == 1) { system.printMyContract(); } else { system.printContracts(); } break;
                     case 13: handleSetNewName();       break;
                     case 14: handleSetNewPassword();   break;
                     case 15: system.viewMyProfile();   break;
@@ -52,6 +52,8 @@ public class Main {
                     case 17: handleMakePayment(); break;
                     case 18 : system.viewMyBalance(); break;
                     case 19: handleAddBalanceForApplicant(); break;
+                    case 20: handleSetApprovalLimit();       break;
+                    case 21: handleSetRequiredVotes();       break;
                 }
 
             } catch (InputMismatchException e) {
@@ -113,6 +115,8 @@ public class Main {
             System.out.println("  [3] Create Staff");
             System.out.println("  [4] Create Applicant");
             System.out.println("  [19] ADD BALANCE TO APPLICANT ACCOUNT");
+            System.out.println("  [20] Set Loan Officer Approval Limit");
+            System.out.println("  [21] Set Required Committee Votes");
             System.out.println("------------------------------------------");
             System.out.println("  LOAN OFFICER ACTIONS");
             System.out.println("  [5] Create Contract");
@@ -204,6 +208,30 @@ private static void handleMakePayment() {
              }
         }
 
+    }
+
+    private static void handleSetApprovalLimit() {
+        printBackHint();
+        try {
+            System.out.println("\n--- SET LOAN OFFICER APPROVAL LIMIT ---");
+            system.printStaffs();
+            int staffId = readInt("Enter Loan Officer staff ID: ");
+            double newLimit = readDouble("Enter new approval limit: ");
+            system.setNewApprovalLimit(staffId, newLimit);
+        } catch (BackActionException e) {
+            System.out.println(e.getMessage());
+        }
+    }
+
+    private static void handleSetRequiredVotes() {
+        printBackHint();
+        try {
+            System.out.println("\n--- SET REQUIRED COMMITTEE VOTES ---");
+            int votes = readInt("Enter required number of committee votes: ");
+            system.setNewRequiredVotes(votes);
+        } catch (BackActionException e) {
+            System.out.println(e.getMessage());
+        }
     }
 
     private static void handleSetNewName() {
