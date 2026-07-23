@@ -45,6 +45,8 @@ public class PaymentSchedule {
                 System.out.println("Payment successful for month: " + monthNumber);
                 return true;
                 }
+                System.out.println("Error: Insufficient balance to pay month " + monthNumber + ".");
+                return false;
             }
         }
         System.out.println("Error: Month not found.");
