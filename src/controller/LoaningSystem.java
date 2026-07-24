@@ -256,28 +256,19 @@ public class LoaningSystem {
             throw new IllegalArgumentException("Applicant ID "+ applicantId + " doesn't exist");
         }
     
-        double borrowedAmount=0;
-
+        double borrowedAmount = 0;
         for (int i = 0; i < contracts.size(); i++) {
-
             Contract c = contracts.get(i);
-            if(c.getApplicant().getId() == applicantId){
-                borrowedAmount+=c.getPrincipalAmount();
-                if(borrowedAmount + amount >= applicant.getSalary() / 2){
-                    throw new IllegalArgumentException("Applicant cannot take more loan. Total would exceed 1/2 of salary." +
-            "\n  Already borrowed: " + borrowedAmount +
-            "\n  Requested: " + amount +
-            "\n  Max allowed: " + (applicant.getSalary() / 2));
-                }
+            if (c.getApplicant().getId() == applicantId) {
+                borrowedAmount += c.getPrincipalAmount();
             }
+        }
 
-
-           /*  if (c.getApplicant().getApplicantId() == applicantId
-            && c.getPrincipalAmount() == amount
-                    && c.getDuration() == duration) {
-                throw new IllegalArgumentException("Error: Identical contract already exists for this applicant.");
-            }
-            */
+        if (!applicant.canBorrow(borrowedAmount, amount)) {
+            throw new IllegalArgumentException("Applicant cannot take more loan. Total would exceed 1/2 of salary." +
+                    "\n  Already borrowed: " + borrowedAmount +
+                    "\n  Requested: " + amount +
+                    "\n  Max allowed: " + applicant.getMaxBorrowableAmount());
         }
 
 
