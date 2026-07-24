@@ -58,7 +58,7 @@ public class Manager extends Staff {
 
     @Override
     public boolean canContractApprove( Staff staff ,Contract contract){
-         System.out.println("Error : Manager cannot approve contract");
+         LoaningSystem.setLastMessage("Error: Manager cannot approve contract");
          return false;
     }
 }
