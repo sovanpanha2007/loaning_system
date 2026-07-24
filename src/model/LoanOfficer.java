@@ -30,9 +30,7 @@ private boolean checkLoanOfficerApprovalLimit(double amount){
 }
 
 private boolean checkApplicantSalaryAndAge(double amount, Applicant applicant){
-    int applicantSalary=applicant.getSalary();
-    int applicantAge=applicant.getAge();
-    return amount < applicantSalary /2 &&  applicantAge >= 18;
+    return applicant.canBorrow(0, amount) && applicant.getAge() >= 18;
 }
 
 
