@@ -115,6 +115,15 @@ public class Applicant  implements ILoginable {
       throw new IllegalArgumentException("Invalid age. Age should be between 18 and 65.");  
     }
 
+    // Business rule: an applicant may never have more than half their salary in outstanding principal.
+    public double getMaxBorrowableAmount() {
+        return salary / 2; // integer division, matching prior behavior for odd salaries
+    }
+
+    public boolean canBorrow(double alreadyBorrowed, double requestedAmount) {
+        return (alreadyBorrowed + requestedAmount) < getMaxBorrowableAmount();
+    }
+
     public boolean deductBalance(double amount){
         if(getBalance() < amount){
               return false;
@@ -159,13 +168,16 @@ public class Applicant  implements ILoginable {
         return "Name: " + name + " , Username: "+ userName + " , Phone number: " + phoneNumber + ", Id: " + applicantId + ", gender: " + gender + ", salary: " + salary + ", age: " + age;
     }
 
-    public boolean equals(Applicant applicant2) {
-        if (applicant2 == null) {
-            return false;
-        }
-        if (this.name.equals(applicant2.name) && this.applicantId == applicant2.applicantId) {
-            return true;
-        }
-        return false;
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) return true;
+        if (!(obj instanceof Applicant)) return false;
+        Applicant other = (Applicant) obj;
+        return this.applicantId == other.applicantId;
+    }
+
+    @Override
+    public int hashCode() {
+        return Integer.hashCode(applicantId);
     }
 }
