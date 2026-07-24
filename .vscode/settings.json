@@ -1,7 +1,8 @@
 {
-    "java.project.referencedLibraries": [
-        "lib/**/*.jar",
-        "/home/KIMHONG/Downloads/mysql-connector-j-9.6.0/mysql-connector-j-9.6.0.jar"
-    ],
-    "java.debug.settings.onBuildFailureProceed": true
+    "code-runner.executorMap": {
+        "java": "cd $workspaceRoot && find src -name '*.java' > /tmp/lms_sources.txt && javac -d /tmp/lms_out @/tmp/lms_sources.txt && java -cp /tmp/lms_out src.controller.Main"
+    },
+    "code-runner.runInTerminal": true,
+    "java.project.sourcePaths": ["."],
+    "java.project.outputPath": "bin"
 }
