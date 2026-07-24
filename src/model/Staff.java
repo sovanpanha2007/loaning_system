@@ -133,7 +133,12 @@ public void setActive(boolean c){
         if (this == obj) return true;
         if (!(obj instanceof Staff)) return false;
         Staff s1 = (Staff) obj;
-        return s1.name.equals(this.name) && s1.staffId == this.staffId;
+        return s1.staffId == this.staffId;
+    }
+
+    @Override
+    public int hashCode() {
+        return Integer.hashCode(staffId);
     }
     @Override
     public void setNewName(String name){
