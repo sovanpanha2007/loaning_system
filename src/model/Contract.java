@@ -138,16 +138,18 @@ public int getCommitteeVoteCount() {
     return votedCommitteeIds.size();
 }
 
-// will check later
 @Override
 public boolean equals(Object obj) {
     if (this == obj) return true;
     if (!(obj instanceof Contract)) return false;
     Contract other = (Contract) obj;
-    
-    return this.applicant.getName().equals(other.applicant.getName()) &&
-           this.principalAmount == other.principalAmount &&
-           this.duration == other.duration;
+
+    return this.contractId == other.contractId;
+}
+
+@Override
+public int hashCode() {
+    return Integer.hashCode(contractId);
 }
 
 @Override
