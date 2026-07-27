@@ -28,27 +28,27 @@ public class CreditCommittee extends Staff {
     }
 
     @Override
-    public boolean canContractApprove(Staff staff , Contract contract){
+    public boolean canContractApprove(Staff staff , Contract contract, LoaningSystem system){
         CreditCommittee committee = (CreditCommittee) staff;
 
         if (!contract.addCommitteeVote(committee.getId())) {
-            LoaningSystem.setLastMessage("Error: " + committee.getName()
+            system.setLastMessage("Error: " + committee.getName()
                     + " has already voted on Contract #" + contract.getContractId());
             return false;
         }
 
-        int required = LoaningSystem.getRequiredCommitteeVotes();
+        int required = system.getRequiredCommitteeVotes();
         int current = contract.getCommitteeVoteCount();
 
         if (current < required) {
-            LoaningSystem.setLastMessage("Vote cast by " + committee.getName()
+            system.setLastMessage("Vote cast by " + committee.getName()
                     + ". Current votes: " + current + "/" + required);
             return false;
         }
 
         contract.setStatus(Contract.APPROVED);
         contract.setApprovingOfficer(committee);
-        LoaningSystem.setLastMessage("Contract #" + contract.getContractId()
+        system.setLastMessage("Contract #" + contract.getContractId()
                 + " approved by committee quorum (" + current + "/" + required + ")");
         return true;
     }
