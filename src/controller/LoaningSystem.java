@@ -42,7 +42,7 @@ public class LoaningSystem {
 
     private String bankName;
     private double currentInterestRate = 0.05;
-    private static int requiredCommitteeVotes = 2;
+    private int requiredCommitteeVotes = 2;
 
     private ArrayList<Staff> staffs;
     private ArrayList<Applicant> applicants;
@@ -50,7 +50,7 @@ public class LoaningSystem {
     private ArrayList<PaymentSchedule> schedules;
 
     private ILoginable loggedInUser;
-    private  static String lastMessage;
+    private String lastMessage;
 
     public LoaningSystem(String bankName, double currentInterestRate) {
         setBankName(bankName);
@@ -62,14 +62,14 @@ public class LoaningSystem {
         this.schedules = new ArrayList<>();
 
         this.loggedInUser = null;
-        LoaningSystem.lastMessage   = "";
+        this.lastMessage   = "";
 
         seedDefaultAdmin();
     }
 
     public String getBankName()                  { return bankName; }
     public double getCurrentInterestRate()        { return currentInterestRate; }
-    public static int getRequiredCommitteeVotes(){ return requiredCommitteeVotes; }
+    public int getRequiredCommitteeVotes(){ return requiredCommitteeVotes; }
     public String getLastMessage()               { return lastMessage; }
     public boolean isLoggedIn()             { return loggedInUser != null; }
     public ILoginable getLoggedInUser()             { return loggedInUser; }
@@ -119,15 +119,15 @@ public class LoaningSystem {
         this.currentInterestRate = rate;
     }
 
-    public  static void setLastMessage(String msg) {
-        LoaningSystem.lastMessage = msg;
+    public void setLastMessage(String msg) {
+        this.lastMessage = msg;
         System.out.println(msg);
     }
 
     private void seedDefaultAdmin() {
       Staff admin = new Manager("Admin","Admin123","default",18,"1234", 5000,2);
         staffs.add(admin);
-        setLastMessage("System ready. Default admin seeded: Admin123 / 1234");
+        setLastMessage("System ready. Default admin account seeded.");
     }
 
     public void printMyContract(){
@@ -300,10 +300,10 @@ public class LoaningSystem {
         }
         // probably have bug here will check later
         Staff officer = (Staff) loggedInUser;
-        if(officer.canContractApprove(officer,contract)){
+        if(officer.canContractApprove(officer,contract,this)){
              PaymentSchedule schedule = new PaymentSchedule(contract);
             schedules.add(schedule);
-            LoaningSystem.setLastMessage("Contract #" + contract.getContractId() + " approved by " + officer.getPosition() + ": " + officer.getName() + " generate schedule for payment : " + schedule.getScheduleId());
+            setLastMessage("Contract #" + contract.getContractId() + " approved by " + officer.getPosition() + ": " + officer.getName() + " generate schedule for payment : " + schedule.getScheduleId());
         }
             
         
@@ -462,7 +462,7 @@ public class LoaningSystem {
             return;
         }
 
-        LoaningSystem.requiredCommitteeVotes = votes;
+        this.requiredCommitteeVotes = votes;
         setLastMessage("Successfully set required committee votes to " + votes);
     }
 
