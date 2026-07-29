@@ -1,5 +1,7 @@
 package src.model;
 
+import java.math.BigDecimal;
+
 import src.controller.LoaningSystem;
 
 public class Manager extends Staff {
@@ -16,7 +18,7 @@ public class Manager extends Staff {
         return accessLevel;
     }
 
-    protected void setAccessLevel(int accessLevel){
+    public void setAccessLevel(int accessLevel){
         if(accessLevel < 1 || accessLevel > 3){
             System.out.println("Error : access level is not in range ");
             return;
@@ -25,10 +27,9 @@ public class Manager extends Staff {
 
     }
 
-    public void setBalanceApplicant(Applicant applicant , double amount){
-        double newAmount= applicant.getBalance() +amount;
-         applicant.setBalance(newAmount);
-    } 
+    public void setBalanceApplicant(Applicant applicant , BigDecimal amount){
+        applicant.setBalance(applicant.getBalance().add(amount));
+    }
 
 
 
@@ -40,7 +41,10 @@ public class Manager extends Staff {
             case LoaningSystem.CREATE_APPLICANT: return true;
             case LoaningSystem.SET_NEW_APVL: return true;
             case LoaningSystem.SET_NEW_REQV: return true;
+            case LoaningSystem.SET_NEW_DTI: return true;
             case LoaningSystem.ADD_BALANCE : return true;
+            case LoaningSystem.CHECK_DELINQUENCY : return true;
+            case LoaningSystem.VIEW_AUDIT_LOG : return true;
             default: return super.can(action);
         }
     }
