@@ -54,6 +54,9 @@ public class Main {
                     case 19: handleAddBalanceForApplicant(); break;
                     case 20: handleSetApprovalLimit();       break;
                     case 21: handleSetRequiredVotes();       break;
+                    case 22: system.checkDelinquency();      break;
+                    case 23: system.printAuditLog();         break;
+                    case 24: handleSetMaxDti();              break;
                 }
 
             } catch (InputMismatchException e) {
@@ -64,6 +67,7 @@ public class Main {
         }
 
         scanner.close();
+        system.close();
     }
 
 
@@ -117,6 +121,8 @@ public class Main {
             System.out.println("  [19] ADD BALANCE TO APPLICANT ACCOUNT");
             System.out.println("  [20] Set Loan Officer Approval Limit");
             System.out.println("  [21] Set Required Committee Votes");
+            System.out.println("  [22] Run Delinquency Check");
+            System.out.println("  [24] Set Max Debt-to-Income Ratio");
             System.out.println("------------------------------------------");
             System.out.println("  LOAN OFFICER ACTIONS");
             System.out.println("  [5] Create Contract");
@@ -131,6 +137,7 @@ public class Main {
             System.out.println("  [10] Print All Staffs");
             System.out.println("  [11] Print All Applicants");
             System.out.println("  [12] Print All Contracts");
+            System.out.println("  [23] View Audit Log");
             System.out.println("------------------------------------------");
             System.out.println("  PROFILE");
             System.out.println("  [13] Change Username");
@@ -152,8 +159,9 @@ private static void handleMakePayment() {
             System.out.println("\n--- MAKE PAYMENT ---");
             system.printMyContract();
             int contractId  = readInt("Enter contract ID: ");
-            int monthNumber = readInt("Enter month number to pay: ");
-            system.makePayment(contractId, monthNumber);
+            system.printMySchedule(contractId);
+            double amount = readDouble("Enter amount to pay: ");
+            system.makePayment(contractId, amount);
             validInput = true;
         } catch (IllegalArgumentException e) {
             System.out.println(e.getMessage());
@@ -229,6 +237,17 @@ private static void handleMakePayment() {
             System.out.println("\n--- SET REQUIRED COMMITTEE VOTES ---");
             int votes = readInt("Enter required number of committee votes: ");
             system.setNewRequiredVotes(votes);
+        } catch (BackActionException e) {
+            System.out.println(e.getMessage());
+        }
+    }
+
+    private static void handleSetMaxDti() {
+        printBackHint();
+        try {
+            System.out.println("\n--- SET MAX DEBT-TO-INCOME RATIO ---");
+            double ratio = readDouble("Enter new max debt-to-income ratio (e.g. 0.40 for 40%): ");
+            system.setNewMaxDebtToIncomeRatio(ratio);
         } catch (BackActionException e) {
             System.out.println(e.getMessage());
         }
@@ -327,8 +346,9 @@ private static void handleMakePayment() {
                 String password    = readPassword("Enter password: ");
                 int    age         = readAge("Enter age: ");
                 int    income      = readInt("Enter income: ");
+                double existingExternalDebt = readDouble("Enter existing external debt (0 if none): ");
                 String gender      = readGender("Select Gender");
-                system.createApplicant(name, userName, phoneNumber, password, age, income, gender);
+                system.createApplicant(name, userName, phoneNumber, password, age, income, gender, existingExternalDebt);
                 validInput = true;
             } catch (BackActionException e) {
                 System.out.println(e.getMessage());
