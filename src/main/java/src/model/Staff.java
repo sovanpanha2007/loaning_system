@@ -12,7 +12,6 @@ public abstract class Staff implements IStaff , ILoginable{
     private String phoneNumber;
     private int age;
     private String password;
-    private  static  int staffIndexID = 1;
     private int staffId;
     private boolean active;
     private double salary;
@@ -24,13 +23,9 @@ public abstract class Staff implements IStaff , ILoginable{
         setAge(age);
         setUsername(userName);
         setPhoneNumber(phoneNumber);
-        setNextStaffId();
         this.active=true;
         this.salary=0;
         this.position="Staff";
-        System.out.println("Staff Constructor run Successfully");
-
-
     }
 
 
@@ -76,10 +71,22 @@ public abstract class Staff implements IStaff , ILoginable{
 
     // ===== Setters with validation =====
 
-
-    public void setNextStaffId(){
-        this.staffId=staffIndexID++;
+    // Assigned by StaffDao once the row is inserted (or when hydrating from an existing row) —
+    // ids are database-generated now, not a static in-process counter.
+    public void setId(int id){
+        this.staffId=id;
     }
+
+    // Lets the DAO round-trip an already-hashed password read back from storage
+    // without re-hashing it through setPassword(String plaintext).
+    public String getPasswordHash(){
+        return password;
+    }
+
+    public void setPasswordHash(String passwordHash){
+        this.password=passwordHash;
+    }
+
     public void setName(String name) {
         this.name=name;
     }
