@@ -1,4 +1,6 @@
 package src.model;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.ArrayList;
 
 public class Contract {
@@ -9,16 +11,16 @@ public class Contract {
    public static final String ACTIVE="ACTIVE";
    public static final String CLOSED="CLOSED";
    public static final String FORWARDED="FORWARDED";
+   public static final String DEFAULTED="DEFAULTED";
 
 
-    private static int indexID = 1;
     private int contractId;
 
     private Applicant applicant;
-    private double principalAmount;   // original loan amount
-    private double totalAmount;       // after compound interest
-    private int duration; 
-    private double interestRate;            
+    private BigDecimal principalAmount;   // original loan amount
+    private BigDecimal totalAmount;       // after compound interest
+    private int duration;
+    private double interestRate;
 
     // Staff involvement
     private Staff approvingOfficer;  // set AFTER creation
@@ -31,8 +33,7 @@ public class Contract {
     private static final int MAX_COSIGNERS = 3;
 
 
-    public Contract(Applicant applicant, double amount, int duration, double interestRate) {
-    this.contractId = indexID++;
+    public Contract(Applicant applicant, BigDecimal amount, int duration, double interestRate) {
     setApplicant(applicant);
     setPrincipalAmount(amount);
     setDuration(duration);
@@ -44,17 +45,40 @@ public class Contract {
   }
 
 
-  private double calculateTotal(){
-    return principalAmount * Math.pow(1+ interestRate , duration);
+  private BigDecimal calculateTotal(){
+    int totalMonths = duration * 12;
+    BigDecimal total = BigDecimal.ZERO;
+    for (Amortization.Entry entry : Amortization.schedule(principalAmount, interestRate, totalMonths)) {
+        total = total.add(entry.getPayment());
+    }
+    return total.setScale(2, RoundingMode.HALF_UP);
+  }
+
+  // The nominal rate alone understates true cost/return for a reducing-balance loan: the
+  // borrower only ever owes the full principal for the first instant, so total interest paid
+  // is much less than principal * nominalRate * years. This annualizes actual interest paid
+  // against principal, giving the disclosure figure that reflects what the loan really costs.
+  public BigDecimal getEffectiveApr(){
+    return totalAmount.subtract(principalAmount)
+            .divide(principalAmount, 4, RoundingMode.HALF_UP)
+            .divide(BigDecimal.valueOf(duration), 4, RoundingMode.HALF_UP);
   }
 
   public int getContractId()        { return contractId; }
   public Applicant getApplicant()   { return applicant; }
-  public double getPrincipalAmount(){ return principalAmount; }
-  public double getTotalAmount()    { return totalAmount; }
+  public BigDecimal getPrincipalAmount(){ return principalAmount; }
+  public BigDecimal getTotalAmount()    { return totalAmount; }
   public int getDuration()          { return duration; }
   public double getInterestRate()   { return interestRate; }
   public String getStatus()         { return status; }
+  public Staff getApprovingOfficer(){ return approvingOfficer; }
+  public Staff getDraftingOfficer() { return draftingOfficer; }
+
+  // Assigned by ContractDao once the row is inserted (or when hydrating from an existing row) —
+  // ids are database-generated now, not a static in-process counter.
+  public void setId(int id){
+      this.contractId=id;
+  }
 
 
 
@@ -69,11 +93,11 @@ public class Contract {
 }
 
 
-  public void setPrincipalAmount(double principalAmount) {
-    if(principalAmount <=0){
+  public void setPrincipalAmount(BigDecimal principalAmount) {
+    if(principalAmount == null || principalAmount.compareTo(BigDecimal.ZERO) <= 0){
         throw new IllegalArgumentException("Amount should be > 0 ");
     }
-    this.principalAmount = principalAmount;
+    this.principalAmount = principalAmount.setScale(2, RoundingMode.HALF_UP);
   }
 
 
@@ -159,7 +183,8 @@ public String toString() {
            " | Principal: $" + String.format("%.2f", principalAmount) +
            " | Total: $" + String.format("%.2f", totalAmount) +
            " | Duration: " + duration + " yrs" +
-           " | Rate: " + (interestRate * 100) + "%" +
+           " | Nominal Rate: " + (interestRate * 100) + "%" +
+           " | Effective APR: " + getEffectiveApr().multiply(BigDecimal.valueOf(100)).setScale(2, RoundingMode.HALF_UP) + "%" +
            " | Status: " + status +
            " | Check By: " + (approvingOfficer != null ? approvingOfficer.getPosition() + " " + approvingOfficer.getName() : "Pending");
 }
