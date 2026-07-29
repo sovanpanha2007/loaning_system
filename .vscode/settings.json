@@ -1,8 +1,6 @@
 {
     "code-runner.executorMap": {
-        "java": "cd $workspaceRoot && find src -name '*.java' > /tmp/lms_sources.txt && javac -d /tmp/lms_out @/tmp/lms_sources.txt && java -cp /tmp/lms_out src.controller.Main"
+        "java": "cd $workspaceRoot && mvn -q exec:java@run"
     },
-    "code-runner.runInTerminal": true,
-    "java.project.sourcePaths": ["."],
-    "java.project.outputPath": "bin"
+    "code-runner.runInTerminal": true
 }
