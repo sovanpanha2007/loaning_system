@@ -1,17 +1,18 @@
 package src.controller;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import java.io.ByteArrayOutputStream;
-import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.List;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import src.interfaces.ILoginable;
+import src.model.AuditEntry;
+import src.model.Contract;
 
 // Confirms the audit log actually records one entry per mutating step of a full
 // create -> approve -> pay flow, in order, and that each write landed in the same
@@ -39,27 +40,30 @@ class LoaningSystemAuditTest {
 
     @Test
     void fullLifecycleProducesOneAuditRowPerStepInOrder() {
-        system.login("Admin123", "1234");
-        system.createApplicant("Jane Doe", "jane", "011111111", "pass1234", 30, 10000, "F", 0);
-        system.createStaff("Larry Officer", "larry", "022222222", 28, "passL", 3000, LoaningSystem.LOAN_OFFICER);
+        ILoginable admin = system.authenticate("Admin123", "1234");
+        system.createApplicant(admin, "Jane Doe", "jane", "011111111", "pass1234", 30, 10000, "F", 0);
+        system.createStaff(admin, "Larry Officer", "larry", "022222222", 28, "passL", 3000, LoaningSystem.LOAN_OFFICER);
 
-        system.login("jane", "pass1234");
-        int applicantId = system.getLoggedInUser().getId();
-        system.createContract(applicantId, 1200, 1);
-        int contractId = parseTrailingId(system.getLastMessage());
+        ILoginable jane = system.authenticate("jane", "pass1234");
+        int applicantId = jane.getId();
+        Contract contract = system.createContract(jane, applicantId, 1200, 1);
+        int contractId = contract.getContractId();
 
-        system.login("larry", "passL");
-        system.approveContract(contractId);
+        ILoginable larry = system.authenticate("larry", "passL");
+        system.approveContract(larry, contractId);
 
-        system.login("Admin123", "1234");
-        system.addBalanceforApplicant(applicantId, 2000);
+        admin = system.authenticate("Admin123", "1234");
+        system.addBalanceforApplicant(admin, applicantId, 2000);
 
-        system.login("jane", "pass1234");
-        system.makePayment(contractId, 1);
+        jane = system.authenticate("jane", "pass1234");
+        system.makePayment(jane, contractId, 1);
 
-        String log = captureAuditLog();
+        admin = system.authenticate("Admin123", "1234");
+        List<AuditEntry> log = system.getAuditLog(admin);
 
-        String[] expectedActionsInOrder = {
+        List<String> actions = log.stream().map(AuditEntry::getAction).toList();
+
+        List<String> expectedActionsInOrder = List.of(
                 "LOGIN",             // Admin logging in
                 "CREATE_APPLICANT",
                 "CREATE_STAFF",
@@ -70,35 +74,10 @@ class LoaningSystemAuditTest {
                 "LOGIN",             // Admin logging in to fund the account
                 "DEPOSIT",
                 "LOGIN",             // Jane logging in again
-                "MAKE_PAYMENT"
-        };
+                "MAKE_PAYMENT",
+                "LOGIN"              // Admin logging in to view the audit log
+        );
 
-        int searchFrom = 0;
-        for (String action : expectedActionsInOrder) {
-            int index = log.indexOf("-> " + action + " ", searchFrom);
-            assertTrue(index >= 0, "expected \"" + action + "\" after position " + searchFrom + " in:\n" + log);
-            searchFrom = index + action.length();
-        }
-    }
-
-    private int parseTrailingId(String message) {
-        Matcher m = Pattern.compile("(\\d+)$").matcher(message.trim());
-        if (!m.find()) {
-            throw new IllegalStateException("Could not find a trailing id in: " + message);
-        }
-        return Integer.parseInt(m.group(1));
-    }
-
-    private String captureAuditLog() {
-        system.login("Admin123", "1234");
-        PrintStream originalOut = System.out;
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        System.setOut(new PrintStream(buffer));
-        try {
-            system.printAuditLog();
-        } finally {
-            System.setOut(originalOut);
-        }
-        return buffer.toString();
+        assertEquals(expectedActionsInOrder, actions);
     }
 }
