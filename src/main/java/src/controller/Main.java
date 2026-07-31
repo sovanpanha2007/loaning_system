@@ -1,15 +1,19 @@
 package src.controller;
 
 import java.util.InputMismatchException;
+import java.util.List;
 import java.util.Scanner;
 import src.interfaces.ILoginable;
 import src.model.Applicant;
+import src.model.AuditEntry;
+import src.model.Contract;
 import src.model.Staff;
 
 public class Main {
 
     static Scanner scanner = new Scanner(System.in);
     static LoaningSystem system = new LoaningSystem("KH Bank", 0.05);
+    static ILoginable currentUser;
     static boolean loggin;
     static int isUser = -1;
 
@@ -42,26 +46,26 @@ public class Main {
                     case 7:  handleRejectContract();   break;
                     case 8:  handleAddCoSigner();      break;
                     case 9:  handleDeactivateStaff();  break;
-                    case 10: system.printStaffs();     break;
-                    case 11: system.printApplicants(); break;
-                    case 12: if (isUser == 1) { system.printMyContract(); } else { system.printContracts(); } break;
+                    case 10: printStaffs();     break;
+                    case 11: printApplicants(); break;
+                    case 12: if (isUser == 1) { printMyContracts(); } else { printContracts(); } break;
                     case 13: handleSetNewName();       break;
                     case 14: handleSetNewPassword();   break;
-                    case 15: system.viewMyProfile();   break;
+                    case 15: System.out.println(system.getMyProfile(currentUser)); break;
                     case 16: handleViewPaymentSchedule(); break;
                     case 17: handleMakePayment(); break;
-                    case 18 : system.viewMyBalance(); break;
+                    case 18: System.out.println("Your balance : " + system.getMyBalance(currentUser) + "$"); break;
                     case 19: handleAddBalanceForApplicant(); break;
                     case 20: handleSetApprovalLimit();       break;
                     case 21: handleSetRequiredVotes();       break;
-                    case 22: system.checkDelinquency();      break;
-                    case 23: system.printAuditLog();         break;
+                    case 22: handleCheckDelinquency();       break;
+                    case 23: handlePrintAuditLog();          break;
                     case 24: handleSetMaxDti();              break;
                 }
 
-            } catch (InputMismatchException e) {
-                System.out.println(e.getMessage());
             } catch (BackActionException e) {
+                System.out.println(e.getMessage());
+            } catch (RuntimeException e) {
                 System.out.println(e.getMessage());
             }
         }
@@ -150,18 +154,53 @@ public class Main {
         System.out.println("------------------------------------------");
         System.out.println("  [0] Exit");
         System.out.println("==========================================");
-    
+
 }
+
+    private static void printList(String label, String emptyMessage, List<?> items) {
+        System.out.println("\n--- " + label + " (" + items.size() + ") ---");
+        if (items.isEmpty()) {
+            System.out.println(emptyMessage);
+            return;
+        }
+        int i = 1;
+        for (Object item : items) {
+            System.out.println((i++) + ") " + item);
+        }
+    }
+
+    private static void printStaffs() {
+        printList("Staffs", "No staff found.", system.getAllStaff());
+    }
+
+    private static void printApplicants() {
+        printList("Applicants", "No applicants found.", system.getAllApplicants());
+    }
+
+    private static void printContracts() {
+        printList("Contracts", "No contracts found.", system.getAllContracts());
+    }
+
+    private static void printMyContracts() {
+        List<Contract> myContracts = system.getMyContracts(currentUser);
+        for (Contract contract : myContracts) {
+            System.out.println(contract);
+        }
+        if (myContracts.isEmpty()) {
+            System.out.println("Error : Contract not found");
+        }
+    }
+
 private static void handleMakePayment() {
     boolean validInput = false;
     while (!validInput) {
         try {
             System.out.println("\n--- MAKE PAYMENT ---");
-            system.printMyContract();
+            printMyContracts();
             int contractId  = readInt("Enter contract ID: ");
-            system.printMySchedule(contractId);
+            system.getMySchedule(currentUser, contractId).printSchedule();
             double amount = readDouble("Enter amount to pay: ");
-            system.makePayment(contractId, amount);
+            system.makePayment(currentUser, contractId, amount);
             validInput = true;
         } catch (IllegalArgumentException e) {
             System.out.println(e.getMessage());
@@ -171,17 +210,18 @@ private static void handleMakePayment() {
 
     private static void handleLogin() {
         printBackHint();
-        while (!loggin) {
+        while (currentUser == null) {
             try {
                 System.out.println("\n--- LOGIN ---");
                 String username = readUsername("Enter username: ");
                 String password = readPassword("Enter password: ");
-                system.login(username, password);
+                currentUser = system.authenticate(username, password);
                 loggin = true;
+                System.out.println("Login success. Welcome " + currentUser.getName() + "!");
                 validateUser();
             } catch (BackActionException e) {
                 System.out.println(e.getMessage());
-                return;                          
+                return;
             } catch (LogginException e) {
                 System.out.println(e.getMessage());
             }
@@ -189,10 +229,9 @@ private static void handleMakePayment() {
     }
 
     private static void validateUser() {
-        ILoginable user = system.getLoggedInUser();
-        if (user instanceof Applicant) {
+        if (currentUser instanceof Applicant) {
             isUser = 1;
-        } else if (user instanceof Staff) {
+        } else if (currentUser instanceof Staff) {
             isUser = 0;
         }
     }
@@ -201,12 +240,12 @@ private static void handleMakePayment() {
         boolean validInput=false;
         while(!validInput){
              try {
-                system.printApplicants();
+                printApplicants();
              int applicantId=readInt("Enter applicant id: ");
              int amount=readInt("Enter amount will be add: ");
-             system.addBalanceforApplicant(applicantId, amount);
+             system.addBalanceforApplicant(currentUser, applicantId, amount);
              validInput=true;
-                
+
              } catch ( BackActionException e) {
                  System.out.println(e.getMessage());
                  return;
@@ -222,10 +261,10 @@ private static void handleMakePayment() {
         printBackHint();
         try {
             System.out.println("\n--- SET LOAN OFFICER APPROVAL LIMIT ---");
-            system.printStaffs();
+            printStaffs();
             int staffId = readInt("Enter Loan Officer staff ID: ");
             double newLimit = readDouble("Enter new approval limit: ");
-            system.setNewApprovalLimit(staffId, newLimit);
+            system.setNewApprovalLimit(currentUser, staffId, newLimit);
         } catch (BackActionException e) {
             System.out.println(e.getMessage());
         }
@@ -236,7 +275,7 @@ private static void handleMakePayment() {
         try {
             System.out.println("\n--- SET REQUIRED COMMITTEE VOTES ---");
             int votes = readInt("Enter required number of committee votes: ");
-            system.setNewRequiredVotes(votes);
+            system.setNewRequiredVotes(currentUser, votes);
         } catch (BackActionException e) {
             System.out.println(e.getMessage());
         }
@@ -247,7 +286,7 @@ private static void handleMakePayment() {
         try {
             System.out.println("\n--- SET MAX DEBT-TO-INCOME RATIO ---");
             double ratio = readDouble("Enter new max debt-to-income ratio (e.g. 0.40 for 40%): ");
-            system.setNewMaxDebtToIncomeRatio(ratio);
+            system.setNewMaxDebtToIncomeRatio(currentUser, ratio);
         } catch (BackActionException e) {
             System.out.println(e.getMessage());
         }
@@ -262,11 +301,11 @@ private static void handleMakePayment() {
                 String username    = readUsername("Enter your name: ");
                 String password    = readPassword("Enter your password: ");
                 String newUsername = readNewUsername("Enter your new name: ");
-                system.setNewUserName(username, newUsername, password);
+                system.setNewUserName(currentUser, username, newUsername, password);
                 validInput = true;
             } catch (BackActionException e) {
                 System.out.println(e.getMessage());
-                return;                         
+                return;
             } catch (InputMismatchException e) {
                 System.out.println(e.getMessage());
             }
@@ -274,9 +313,9 @@ private static void handleMakePayment() {
     }
     private static void handleViewPaymentSchedule() {
     System.out.println("\n--- MY PAYMENT SCHEDULE ---");
-    system.printMyContract();
+    printMyContracts();
     int contractId = readInt("Enter contract ID: ");
-    system.printMySchedule(contractId);
+    system.getMySchedule(currentUser, contractId).printSchedule();
 }
 
     private static void handleSetNewPassword() {
@@ -292,11 +331,11 @@ private static void handleMakePayment() {
                 if (!newPassword.equals(confirmNewPassword)) {
                     throw new InputMismatchException("Error : mismatch confirmation password");
                 }
-                system.setNewPassword(name, password, newPassword);
+                system.setNewPassword(currentUser, name, password, newPassword);
                 validInput = true;
             } catch (BackActionException e) {
                 System.out.println(e.getMessage());
-                return;                          
+                return;
             } catch (InputMismatchException e) {
                 System.out.println(e.getMessage());
             }
@@ -305,7 +344,8 @@ private static void handleMakePayment() {
 
     private static void handleLogout() {
         System.out.println("\n--- LOGOUT ---");
-        system.logout();
+        System.out.println("Goodbye " + currentUser.getName() + ". Logged out successfully.");
+        currentUser = null;
         loggin = false;
         isUser = -1;
     }
@@ -323,11 +363,11 @@ private static void handleMakePayment() {
                 String password    = readPassword("Enter password: ");
                 double salary      = readDouble("Enter salary: ");
                 String position    = readPosition("Select Position");
-                system.createStaff(name, userName, phoneNumber, age, password, salary, position);
+                system.createStaff(currentUser, name, userName, phoneNumber, age, password, salary, position);
                 validInput = true;
             } catch (BackActionException e) {
                 System.out.println(e.getMessage());
-                return;                         
+                return;
             } catch (IllegalArgumentException e) {
                 System.out.println(e.getMessage());
             }
@@ -348,11 +388,11 @@ private static void handleMakePayment() {
                 int    income      = readInt("Enter income: ");
                 double existingExternalDebt = readDouble("Enter existing external debt (0 if none): ");
                 String gender      = readGender("Select Gender");
-                system.createApplicant(name, userName, phoneNumber, password, age, income, gender, existingExternalDebt);
+                system.createApplicant(currentUser, name, userName, phoneNumber, password, age, income, gender, existingExternalDebt);
                 validInput = true;
             } catch (BackActionException e) {
                 System.out.println(e.getMessage());
-                return;                        
+                return;
             } catch (IllegalArgumentException e) {
                 System.out.println("Error: " + e.getMessage());
             }
@@ -365,30 +405,30 @@ private static void handleMakePayment() {
         while (!validInput) {
             try {
                 System.out.println("\n--- CREATE CONTRACT ---");
-                system.printApplicants();
+                printApplicants();
                 int    applicantId = readInt("Enter applicant ID: ");
                 double amount      = readDouble("Enter loan amount: ");
                 int    duration    = readInt("Enter duration (years): ");
-                system.createContract(applicantId, amount, duration);
+                system.createContract(currentUser, applicantId, amount, duration);
                 validInput = true;
             }
              catch (BackActionException e) {
                 System.out.println(e.getMessage());
-                return;                        
+                return;
             } catch (IllegalArgumentException e) {
                 System.out.println(e.getMessage());
             }
         }
     }
-    
+
 
     private static void handleApproveContract() {
         printBackHint();
         try {
             System.out.println("\n--- APPROVE CONTRACT ---");
-            system.printContracts();
+            printContracts();
             int contractId = readInt("Enter contract ID to approve: ");
-            system.approveContract(contractId);
+            system.approveContract(currentUser, contractId);
         } catch (BackActionException e) {
             System.out.println(e.getMessage());
         }
@@ -398,9 +438,9 @@ private static void handleMakePayment() {
         printBackHint();
         try {
             System.out.println("\n--- REJECT CONTRACT ---");
-            system.printContracts();
+            printContracts();
             int contractId = readInt("Enter contract ID to reject: ");
-            system.rejectContract(contractId);
+            system.rejectContract(currentUser, contractId);
         } catch (BackActionException e) {
             System.out.println(e.getMessage());
         }
@@ -410,11 +450,11 @@ private static void handleMakePayment() {
         printBackHint();
         try {
             System.out.println("\n--- ADD CO-SIGNER ---");
-            system.printContracts();
+            printContracts();
             int contractId = readInt("Enter contract ID: ");
-            system.printStaffs();
+            printStaffs();
             int staffId = readInt("Enter staff ID to add as co-signer: ");
-            system.addCoSigner(contractId, staffId);
+            system.addCoSigner(currentUser, contractId, staffId);
         } catch (BackActionException e) {
             System.out.println(e.getMessage());
         }
@@ -424,11 +464,29 @@ private static void handleMakePayment() {
         printBackHint();
         try {
             System.out.println("\n--- DEACTIVATE STAFF ---");
-            system.printStaffs();
+            printStaffs();
             int staffId = readInt("Enter staff ID to deactivate: ");
-            system.deactivateStaff(staffId);
+            system.deactivateStaff(currentUser, staffId);
         } catch (BackActionException e) {
             System.out.println(e.getMessage());
+        }
+    }
+
+    private static void handleCheckDelinquency() {
+        LoaningSystem.DelinquencyResult result = system.checkDelinquency(currentUser);
+        System.out.println("Delinquency check complete: " + result.getFlaggedLate()
+                + " payment(s) newly flagged late, " + result.getDefaulted() + " contract(s) defaulted.");
+    }
+
+    private static void handlePrintAuditLog() {
+        List<AuditEntry> entries = system.getAuditLog(currentUser);
+        System.out.println("\n--- Audit Log (" + entries.size() + ") ---");
+        if (entries.isEmpty()) {
+            System.out.println("No audit entries found.");
+            return;
+        }
+        for (AuditEntry entry : entries) {
+            System.out.println(entry);
         }
     }
 
@@ -444,7 +502,7 @@ private static void handleMakePayment() {
             System.out.print(prompt);
             try {
                 String input = scanner.nextLine();
-                checkBack(input);               
+                checkBack(input);
                 if (input.isEmpty()) {
                     throw new InputMismatchException("Error: Input cannot be empty. Please try again.");
                 }
@@ -460,7 +518,7 @@ private static void handleMakePayment() {
             System.out.print(prompt);
             try {
                 String input = scanner.nextLine();
-                checkBack(input);                
+                checkBack(input);
                 if (input.isEmpty()) {
                     throw new InputMismatchException("Error: Input cannot be empty. Please try again.");
                 }
@@ -479,7 +537,7 @@ private static void handleMakePayment() {
             System.out.print(prompt);
             try {
                 String input = scanner.nextLine();
-                checkBack(input);                
+                checkBack(input);
                 if (input.isEmpty()) {
                     throw new InputMismatchException("Error: Input cannot be empty. Please try again.");
                 }
@@ -501,7 +559,7 @@ private static void handleMakePayment() {
             System.out.print(prompt);
             try {
                 String input = scanner.nextLine().trim();
-                checkBack(input);                
+                checkBack(input);
                 if (input.isEmpty()) {
                     throw new InputMismatchException("Input cannot be empty.");
                 }
@@ -510,7 +568,7 @@ private static void handleMakePayment() {
                 }
                 return input;
             } catch (InputMismatchException e) {
-                System.out.println(e.getMessage()); 
+                System.out.println(e.getMessage());
             }
         }
     }
@@ -535,13 +593,13 @@ private static void handleMakePayment() {
             System.out.print(prompt);
             try {
                 String raw = scanner.nextLine().trim();
-                checkBack(raw);                  
+                checkBack(raw);
                 int value = Integer.parseInt(raw);
                 if (value < 0 || value > 10000) {
                     throw new NumberFormatException("Range: 0 – 10 000");
                 }
                 return value;
-                                   
+
             } catch (NumberFormatException e) {
                 System.out.println("Invalid input. Please enter a whole number.");
             }
@@ -553,7 +611,7 @@ private static void handleMakePayment() {
             System.out.print(prompt);
             try {
                 String raw = scanner.nextLine().trim();
-                checkBack(raw);                  
+                checkBack(raw);
                 int value = Integer.parseInt(raw);
                 if (value < 18 || value > 65) {
                     throw new InputMismatchException("You must be at least 18 and at most 65 years old.");
@@ -572,7 +630,7 @@ private static void handleMakePayment() {
             System.out.println(prompt);
             try {
                 String password = scanner.nextLine().trim();
-                checkBack(password);             
+                checkBack(password);
                 if (password.length() < 4) {
                     throw new InputMismatchException("Password cannot be under 4 characters.");
                 }
@@ -588,7 +646,7 @@ private static void handleMakePayment() {
             System.out.print(prompt);
             try {
                 String raw = scanner.nextLine().trim();
-                checkBack(raw);                  
+                checkBack(raw);
                 double value = Double.parseDouble(raw);
                 if (value < 0 || value > 10000) {
                     throw new NumberFormatException("Range: 0 – 10 000");
@@ -609,7 +667,7 @@ private static void handleMakePayment() {
         System.out.println("  [1] Male");
         System.out.println("  [2] Female");
         while (true) {
-            int choice = readInt("Enter choice: "); 
+            int choice = readInt("Enter choice: ");
             switch (choice) {
                 case 1: return "M";
                 case 2: return "F";
@@ -624,7 +682,7 @@ private static void handleMakePayment() {
         System.out.println("  [2] LoanOfficer");
         System.out.println("  [3] CreditCommittee");
         while (true) {
-            int choice = readInt("Enter choice: "); 
+            int choice = readInt("Enter choice: ");
             switch (choice) {
                 case 1: return LoaningSystem.MANAGER;
                 case 2: return LoaningSystem.LOAN_OFFICER;
@@ -634,6 +692,3 @@ private static void handleMakePayment() {
         }
     }
 }
-
-
-
