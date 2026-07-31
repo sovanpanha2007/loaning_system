@@ -26,6 +26,12 @@ import src.model.Payment;
 import src.model.PaymentSchedule;
 import src.model.Staff;
 
+// Business-logic layer, shared by the CLI (Main) and the web layer. Every method that acts
+// on behalf of a user takes that user in explicitly (ILoginable actingUser) rather than
+// reading stored session state, and reports failure by throwing instead of printing, so a
+// single LoaningSystem instance is safe to share across many callers/threads: it holds no
+// per-caller state, and DAOs are always used against a connection borrowed for the duration
+// of one call (see sql()/transaction()), never one held open across calls.
 public class LoaningSystem {
 
     public static final String CREATE_STAFF     = "CREATE_STAFF";
@@ -69,13 +75,16 @@ public class LoaningSystem {
     private final PaymentScheduleDao scheduleDao;
     private final AuditDao auditDao;
 
-    private ILoginable loggedInUser;
     private String lastMessage;
 
-    // Guards createContract/approveContract/makePayment's check-then-write sequences so two
+    // A single SQLite Connection is not safe for concurrent use from multiple threads, and
+    // SQLite itself only ever allows one writer at a time — so rather than pool connections,
+    // every DB access (sql()/transaction(), see below) is serialized through this one
+    // reentrant lock. createContract/approveContract/makePayment/checkDelinquency additionally
+    // hold it across their whole check-then-write sequence (not just the write), so two
     // threads can't both pass a business-rule check (borrowing limit, "not already approved",
-    // "not already paid") before either one's write lands — a race that plain DB transactions
-    // don't close on their own since the check and the write are separate statements.
+    // "not already paid") before either one's write lands; being reentrant, the sql()/
+    // transaction() calls made inside those sequences don't deadlock against the outer hold.
     private final ReentrantLock writeLock = new ReentrantLock();
 
     public LoaningSystem(String bankName, double currentInterestRate) {
@@ -97,8 +106,7 @@ public class LoaningSystem {
         this.scheduleDao = new PaymentScheduleDao(connection, contractDao);
         this.auditDao = new AuditDao(connection);
 
-        this.loggedInUser = null;
-        this.lastMessage   = "";
+        this.lastMessage = "";
 
         seedDefaultAdminIfEmpty();
     }
@@ -108,8 +116,6 @@ public class LoaningSystem {
     public int getRequiredCommitteeVotes(){ return requiredCommitteeVotes; }
     public double getMaxDebtToIncomeRatio(){ return maxDebtToIncomeRatio; }
     public String getLastMessage()               { return lastMessage; }
-    public boolean isLoggedIn()             { return loggedInUser != null; }
-    public ILoginable getLoggedInUser()             { return loggedInUser; }
 
     public void close() {
         try {
@@ -119,38 +125,35 @@ public class LoaningSystem {
         }
     }
 
-    public void viewMyProfile(){
-        System.out.println(loggedInUser.toString());
+    public ILoginable getMyProfile(ILoginable actingUser) {
+        requireLogin(actingUser);
+        return actingUser;
     }
 
-    public void viewMyBalance(){
-        if(!requireLogin()) return;
-        if(!requirePermission(LoaningSystem.VIEW_OWN_BALANCE)) return;
-
-        Applicant applicant = findApplicantById(loggedInUser.getId());
-
-         System.out.println("Your balance : " + applicant.getBalance() + "$");
+    public BigDecimal getMyBalance(ILoginable actingUser) {
+        requirePermission(actingUser, VIEW_OWN_BALANCE);
+        Applicant applicant = findApplicantById(actingUser.getId());
+        return applicant.getBalance();
     }
 
-    public void addBalanceforApplicant(int applicantId , int amount){
-         if(!requireLogin()) return;
-         if(!requirePermission(ADD_BALANCE)) return;
+    public Applicant addBalanceforApplicant(ILoginable actingUser, int applicantId, int amount) {
+        requirePermission(actingUser, ADD_BALANCE);
 
-         Applicant applicant = findApplicantById(applicantId);
-         if(applicant == null){
-            setLastMessage("Error : Invalid id applicant not found");
-            return;
-         }
-         Manager manager = (Manager) loggedInUser;
-         manager.setBalanceApplicant(applicant, BigDecimal.valueOf(amount));
-         // No real payment rail exists to integrate here, so this stays a manually-recorded
-         // entry — but it's now a traceable ledger entry (actor, amount, timestamp) via the
-         // audit log instead of a bare, unexplained balance mutation.
-         transaction(() -> {
-             applicantDao.update(applicant);
-             auditDao.record(loggedInUser, "DEPOSIT", "APPLICANT", applicantId, "Amount: $" + amount + ", recorded by " + loggedInUser.getName());
-         });
-         setLastMessage("Successfully add money into " + applicant.getName() + " balance");
+        Applicant applicant = findApplicantById(applicantId);
+        if (applicant == null) {
+            throw new NotFoundException("Error : Invalid id applicant not found");
+        }
+        Manager manager = (Manager) actingUser;
+        manager.setBalanceApplicant(applicant, BigDecimal.valueOf(amount));
+        // No real payment rail exists to integrate here, so this stays a manually-recorded
+        // entry — but it's now a traceable ledger entry (actor, amount, timestamp) via the
+        // audit log instead of a bare, unexplained balance mutation.
+        transaction(() -> {
+            applicantDao.update(applicant);
+            auditDao.record(actingUser, "DEPOSIT", "APPLICANT", applicantId, "Amount: $" + amount + ", recorded by " + actingUser.getName());
+        });
+        setLastMessage("Successfully add money into " + applicant.getName() + " balance");
+        return applicant;
     }
 
     public void setBankName(String bankName) {
@@ -163,8 +166,7 @@ public class LoaningSystem {
 
     public void setCurrentInterestRate(double rate) {
         if (rate <= 0 || rate >= 1) {
-            System.out.println("Error: Interest rate must be between 0 and 1 (e.g. 0.05 for 5%).");
-            return;
+            throw new IllegalArgumentException("Error: Interest rate must be between 0 and 1 (e.g. 0.05 for 5%).");
         }
         this.currentInterestRate = rate;
     }
@@ -184,23 +186,16 @@ public class LoaningSystem {
         setLastMessage("System ready. Default admin account seeded.");
     }
 
-    public void printMyContract(){
-        if(!requireLogin()) return;
-        if(!requirePermission(LoaningSystem.VIEW_OWN_CONTRACT)) return;
-
-      List<Contract> myContracts = sql(() -> contractDao.findByApplicantId(loggedInUser.getId()));
-      for (Contract contract : myContracts) {
-          System.out.println(contract.toString());
-      }
-      if (myContracts.isEmpty()) {
-          setLastMessage("Error : Contract not found");
-      }
+    public List<Contract> getMyContracts(ILoginable actingUser) {
+        requirePermission(actingUser, VIEW_OWN_CONTRACT);
+        return sql(() -> contractDao.findByApplicantId(actingUser.getId()));
     }
 
-    public void login(String name, String password) {
+    // Pure lookup + credential check; mutates nothing on this instance. Records a LOGIN
+    // audit row on success since that's a fact about what happened, not session state.
+    public ILoginable authenticate(String name, String password) {
         if (isBlank(name) || isBlank(password)) {
-            setLastMessage("Error: Name or password cannot be empty.");
-            return;
+            throw new IllegalArgumentException("Error: Name or password cannot be empty.");
         }
 
         Staff s = sql(() -> staffDao.findByUsername(name.trim()));
@@ -211,10 +206,8 @@ public class LoaningSystem {
             if (!s.checkPassword(password)) {
                 throw new LogginException("Error : Wrong Password");
             }
-            loggedInUser = s;
             sql(() -> auditDao.record(s, "LOGIN", null, null, null));
-            setLastMessage("Login success. Welcome " + s.getName() + "!");
-            return;
+            return s;
         }
 
         Applicant a = sql(() -> applicantDao.findByUsername(name.trim()));
@@ -225,30 +218,17 @@ public class LoaningSystem {
             if (!a.checkPassword(password)) {
                 throw new LogginException("Error : Wrong Password");
             }
-            loggedInUser = a;
             sql(() -> auditDao.record(a, "LOGIN", null, null, null));
-            setLastMessage("Login success. Welcome " + a.getName() + "!");
-            return;
+            return a;
         }
         throw new LogginException("Error : User not found");
     }
 
-    public void logout() {
-        if (loggedInUser== null) {
-            setLastMessage("No staff is currently logged in.");
-            return;
-        }
-        setLastMessage("Goodbye " + loggedInUser.getName() + ". Logged out successfully.");
-        loggedInUser = null;
-    }
-
-    public void createStaff(String name,String userName , String phoneNumber, int age, String password, double salary, String position) {
-        if (!requireLogin()) return;
-        if (!requirePermission(CREATE_STAFF)) return;
+    public Staff createStaff(ILoginable actingUser, String name,String userName , String phoneNumber, int age, String password, double salary, String position) {
+        requirePermission(actingUser, CREATE_STAFF);
 
         if (isBlank(name) || isBlank(password)) {
-            setLastMessage("Error: Name or password cannot be empty.");
-            return;
+            throw new IllegalArgumentException("Error: Name or password cannot be empty.");
         }
 
         if (!checkIfUsernameAvailable(userName)) {
@@ -266,25 +246,22 @@ public class LoaningSystem {
         } else if (position.equals(LoaningSystem.CREDIT_COMMITTEE)) {
             newStaff = new CreditCommittee(name ,userName ,phoneNumber,age,password, salary);
         } else {
-
-         throw new IllegalArgumentException("Error: Unknown position '" + position + "'. Use Manager, LoanOfficer, or CreditCommittee.");
+            throw new IllegalArgumentException("Error: Unknown position '" + position + "'. Use Manager, LoanOfficer, or CreditCommittee.");
         }
 
         transaction(() -> {
             staffDao.insert(newStaff);
-            auditDao.record(loggedInUser, "CREATE_STAFF", "STAFF", newStaff.getId(), newStaff.getName() + " (" + position + ")");
+            auditDao.record(actingUser, "CREATE_STAFF", "STAFF", newStaff.getId(), newStaff.getName() + " (" + position + ")");
         });
         setLastMessage("Staff created successfully: " + newStaff.getName() + " | Role: " + position);
+        return newStaff;
     }
 
-    public void createApplicant(String name,String userName , String phoneNumber,String password, int age, int income, String gender, double existingExternalDebt) {
-        if (!requireLogin()) return;
-        if (!requirePermission(CREATE_APPLICANT)) return;
-
+    public Applicant createApplicant(ILoginable actingUser, String name,String userName , String phoneNumber,String password, int age, int income, String gender, double existingExternalDebt) {
+        requirePermission(actingUser, CREATE_APPLICANT);
 
         if (isBlank(name)) {
-            setLastMessage("Error: Applicant name cannot be empty.");
-            return;
+            throw new IllegalArgumentException("Error: Applicant name cannot be empty.");
         }
         if (!checkIfUsernameAvailable(userName)) {
             throw new InputMismatchException("Error : username already taken");
@@ -296,202 +273,217 @@ public class LoaningSystem {
         Applicant applicant = new Applicant(name,userName,phoneNumber,password, gender, BigDecimal.valueOf(income), age, BigDecimal.valueOf(existingExternalDebt));
         transaction(() -> {
             applicantDao.insert(applicant);
-            auditDao.record(loggedInUser, "CREATE_APPLICANT", "APPLICANT", applicant.getId(), applicant.getName());
+            auditDao.record(actingUser, "CREATE_APPLICANT", "APPLICANT", applicant.getId(), applicant.getName());
         });
         setLastMessage("Applicant created successfully: " + name);
+        return applicant;
     }
 
-    public void createContract(int applicantId, double amount, int duration) {
-        if (!requireLogin()) return;
-        if (!requirePermission(CREATE_CONTRACT)) return;
+    public Contract createContract(ILoginable actingUser, int applicantId, double amount, int duration) {
+        requirePermission(actingUser, CREATE_CONTRACT);
+
+        // An Applicant can only ever be requesting a loan for themselves — without this check,
+        // any authenticated applicant could pass an arbitrary applicantId (an IDOR) and open a
+        // contract against a completely different applicant's DTI capacity. Staff (LoanOfficer)
+        // legitimately draft contracts on behalf of any applicant, so this only restricts the
+        // Applicant caller, not staff.
+        if (actingUser instanceof Applicant && actingUser.getId() != applicantId) {
+            throw new IllegalArgumentException("Error: You can only create a contract for yourself.");
+        }
 
         writeLock.lock();
         try {
-        Applicant applicant = findApplicantById(applicantId);
-        if (applicant == null) {
-            throw new IllegalArgumentException("Applicant ID "+ applicantId + " doesn't exist");
-        }
+            Applicant applicant = findApplicantById(applicantId);
+            if (applicant == null) {
+                throw new NotFoundException("Applicant ID "+ applicantId + " doesn't exist");
+            }
 
-        BigDecimal principal = BigDecimal.valueOf(amount);
+            BigDecimal principal = BigDecimal.valueOf(amount);
 
-        List<Contract> existingContracts = sql(() -> contractDao.findByApplicantId(applicantId));
-        BigDecimal borrowedAmount = BigDecimal.ZERO;
-        for (Contract c : existingContracts) {
-            borrowedAmount = borrowedAmount.add(c.getPrincipalAmount());
-        }
+            List<Contract> existingContracts = sql(() -> contractDao.findByApplicantId(applicantId));
+            BigDecimal borrowedAmount = BigDecimal.ZERO;
+            for (Contract c : existingContracts) {
+                borrowedAmount = borrowedAmount.add(c.getPrincipalAmount());
+            }
 
-        if (!applicant.canBorrow(borrowedAmount, principal, maxDebtToIncomeRatio)) {
-            throw new IllegalArgumentException("Applicant cannot take more loan. Total debt would exceed "
-                    + (maxDebtToIncomeRatio * 100) + "% of salary." +
-                    "\n  Existing external debt: " + applicant.getExistingExternalDebt() +
-                    "\n  Already borrowed (this bank): " + borrowedAmount +
-                    "\n  Requested: " + principal +
-                    "\n  Max additional borrowing allowed: " + applicant.getMaxBorrowableAmount(maxDebtToIncomeRatio));
-        }
+            if (!applicant.canBorrow(borrowedAmount, principal, maxDebtToIncomeRatio)) {
+                throw new IllegalArgumentException("Applicant cannot take more loan. Total debt would exceed "
+                        + (maxDebtToIncomeRatio * 100) + "% of salary." +
+                        "\n  Existing external debt: " + applicant.getExistingExternalDebt() +
+                        "\n  Already borrowed (this bank): " + borrowedAmount +
+                        "\n  Requested: " + principal +
+                        "\n  Max additional borrowing allowed: " + applicant.getMaxBorrowableAmount(maxDebtToIncomeRatio));
+            }
 
-        Contract contract = new Contract(applicant, principal, duration, currentInterestRate);
-        if (loggedInUser instanceof Staff) {
-            contract.setDraftingOfficer((Staff) loggedInUser);
-        }
-        transaction(() -> {
-            contractDao.insert(contract);
-            auditDao.record(loggedInUser, "CREATE_CONTRACT", "CONTRACT", contract.getContractId(),
-                    "Principal: " + principal + ", Applicant: " + applicant.getId());
-        });
-        setLastMessage("Contract created successfully. ID: " + contract.getContractId());
+            Contract contract = new Contract(applicant, principal, duration, currentInterestRate);
+            if (actingUser instanceof Staff) {
+                contract.setDraftingOfficer((Staff) actingUser);
+            }
+            transaction(() -> {
+                contractDao.insert(contract);
+                auditDao.record(actingUser, "CREATE_CONTRACT", "CONTRACT", contract.getContractId(),
+                        "Principal: " + principal + ", Applicant: " + applicant.getId());
+            });
+            setLastMessage("Contract created successfully. ID: " + contract.getContractId());
+            return contract;
         } finally {
             writeLock.unlock();
         }
     }
 
-    public void approveContract(int contractId) {
-        if (!requireLogin()) return;
-        if (!requirePermission(APPROVE_LOAN)) return;
+    public Contract approveContract(ILoginable actingUser, int contractId) {
+        requirePermission(actingUser, APPROVE_LOAN);
 
         writeLock.lock();
         try {
-        Contract contract = findContractById(contractId);
-        if (contract == null) {
-            setLastMessage("Error: Contract not found.");
-            return;
-        }
-        if (contract.isApproved()) {
-            setLastMessage("Error: Contract is already approved.");
-            return;
-        }
-        if (!contract.getStatus().equals("PENDING") && !contract.getStatus().equals("FORWARDED")) {
-            setLastMessage("Error: Contract cannot be approved at status: " + contract.getStatus());
-            return;
-        }
-        Staff officer = (Staff) loggedInUser;
-        boolean approved = officer.canContractApprove(officer, contract, this);
-        // Derived from what this call actually did, not just the contract's final status —
-        // a committee vote that doesn't reach quorum leaves status completely unchanged (it
-        // could already have been FORWARDED by an earlier loan officer), so reading status
-        // alone would misreport a mere vote as a fresh FORWARD_CONTRACT/REJECT_CONTRACT.
-        String auditAction;
-        if (approved) {
-            auditAction = "APPROVE_CONTRACT";
-        } else if (officer instanceof CreditCommittee) {
-            auditAction = "VOTE_CONTRACT";
-        } else if (contract.getStatus().equals(Contract.REJECTED)) {
-            auditAction = "REJECT_CONTRACT";
-        } else if (contract.getStatus().equals(Contract.FORWARDED)) {
-            auditAction = "FORWARD_CONTRACT";
-        } else {
-            auditAction = "VOTE_CONTRACT";
-        }
-
-        transaction(() -> {
-            contractDao.save(contract);
-            if (officer instanceof CreditCommittee) {
-                contractDao.addCommitteeVote(contract.getContractId(), officer.getId());
+            Contract contract = findContractById(contractId);
+            if (contract == null) {
+                throw new NotFoundException("Error: Contract not found.");
             }
-            auditDao.record(officer, auditAction, "CONTRACT", contract.getContractId(), "by " + officer.getName());
+            if (contract.isApproved()) {
+                throw new IllegalArgumentException("Error: Contract is already approved.");
+            }
+            if (!contract.getStatus().equals("PENDING") && !contract.getStatus().equals("FORWARDED")) {
+                throw new IllegalArgumentException("Error: Contract cannot be approved at status: " + contract.getStatus());
+            }
+            Staff officer = (Staff) actingUser;
+            boolean approved = officer.canContractApprove(officer, contract, this);
+            // Derived from what this call actually did, not just the contract's final status —
+            // a committee vote that doesn't reach quorum leaves status completely unchanged (it
+            // could already have been FORWARDED by an earlier loan officer), so reading status
+            // alone would misreport a mere vote as a fresh FORWARD_CONTRACT/REJECT_CONTRACT.
+            String auditAction;
             if (approved) {
-                PaymentSchedule schedule = new PaymentSchedule(contract);
-                scheduleDao.insert(schedule);
-                setLastMessage("Contract #" + contract.getContractId() + " approved by " + officer.getPosition() + ": " + officer.getName() + " generate schedule for payment : " + schedule.getScheduleId());
+                auditAction = "APPROVE_CONTRACT";
+            } else if (officer instanceof CreditCommittee) {
+                auditAction = "VOTE_CONTRACT";
+            } else if (contract.getStatus().equals(Contract.REJECTED)) {
+                auditAction = "REJECT_CONTRACT";
+            } else if (contract.getStatus().equals(Contract.FORWARDED)) {
+                auditAction = "FORWARD_CONTRACT";
+            } else {
+                auditAction = "VOTE_CONTRACT";
             }
-        });
+
+            transaction(() -> {
+                contractDao.save(contract);
+                if (officer instanceof CreditCommittee) {
+                    contractDao.addCommitteeVote(contract.getContractId(), officer.getId());
+                }
+                auditDao.record(officer, auditAction, "CONTRACT", contract.getContractId(), "by " + officer.getName());
+                if (approved) {
+                    PaymentSchedule schedule = new PaymentSchedule(contract);
+                    scheduleDao.insert(schedule);
+                    setLastMessage("Contract #" + contract.getContractId() + " approved by " + officer.getPosition() + ": " + officer.getName() + " generate schedule for payment : " + schedule.getScheduleId());
+                }
+            });
+            return contract;
         } finally {
             writeLock.unlock();
         }
     }
 
 
-    public void makePayment(int contractId , double amount){
-       if(!requireLogin()) return;
-       if(!requirePermission(LoaningSystem.MAKE_PAYMENT)) return;
+    public PaymentSchedule.PaymentResult makePayment(ILoginable actingUser, int contractId , double amount){
+        requirePermission(actingUser, MAKE_PAYMENT);
 
-       writeLock.lock();
-       try {
-       PaymentSchedule schedule = findScheduleByContractId(contractId);
-       if(schedule==null){
-        setLastMessage("Error: No payment schedule found for this contract.");
-        return;
-       }
+        writeLock.lock();
+        try {
+            PaymentSchedule schedule = findScheduleByContractId(contractId);
+            if (schedule == null) {
+                throw new NotFoundException("Error: No payment schedule found for this contract.");
+            }
 
-       Applicant applicant = (Applicant) loggedInUser;
-       if(schedule.getContract().getApplicant().getId()!= applicant.getId()){
-         setLastMessage("Error: This is not your contract.");
-         return;
-       }
-       if(schedule.isFullyPaid()){
-        setLastMessage("Error: This contract is already fully paid.");
-        return;
-       }
+            // Re-fetched by ID rather than cast from actingUser: actingUser may be a session
+            // principal held across many calls (a CLI's currentUser, or a web session's cached
+            // principal), and its cached balance can be stale if money moved since it was
+            // fetched — reading/mutating a freshly-loaded row keeps this call correct
+            // regardless of how long the caller has been holding onto actingUser.
+            Applicant applicant = findApplicantById(actingUser.getId());
+            if (applicant == null || schedule.getContract().getApplicant().getId() != applicant.getId()) {
+                throw new IllegalArgumentException("Error: This is not your contract.");
+            }
+            if (schedule.isFullyPaid()) {
+                throw new IllegalArgumentException("Error: This contract is already fully paid.");
+            }
 
-       BigDecimal requested = BigDecimal.valueOf(amount);
-       if(requested.compareTo(BigDecimal.ZERO) <= 0){
-        setLastMessage("Error: Payment amount must be greater than 0.");
-        return;
-       }
-       if(requested.compareTo(applicant.getBalance()) > 0){
-        setLastMessage("Error: Insufficient balance to make this payment.");
-        return;
-       }
+            BigDecimal requested = BigDecimal.valueOf(amount);
+            if (requested.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new IllegalArgumentException("Error: Payment amount must be greater than 0.");
+            }
+            if (requested.compareTo(applicant.getBalance()) > 0) {
+                throw new IllegalArgumentException("Error: Insufficient balance to make this payment.");
+            }
 
-       PaymentSchedule.PaymentResult result = schedule.applyPayment(requested);
-       applicant.deductBalance(result.getAmountApplied());
-       boolean fullyPaid = schedule.isFullyPaid();
-       if (fullyPaid) {
-           schedule.getContract().setStatus("CLOSED");
-       }
+            PaymentSchedule.PaymentResult result = schedule.applyPayment(requested);
+            applicant.deductBalance(result.getAmountApplied());
+            boolean fullyPaid = schedule.isFullyPaid();
+            if (fullyPaid) {
+                schedule.getContract().setStatus("CLOSED");
+            }
 
-       transaction(() -> {
-           for (int month : result.getMonthsTouched()) {
-               Payment p = schedule.getPayment(month);
-               scheduleDao.updatePaymentProgress(schedule.getScheduleId(), month, p.getAmountPaid(), p.isPaid(), p.getPaidDate());
-           }
-           applicantDao.update(applicant);
-           auditDao.record(applicant, "MAKE_PAYMENT", "CONTRACT", contractId,
-                   "Amount: $" + result.getAmountApplied() + ", months: " + result.getMonthsTouched());
-           if (fullyPaid) {
-               contractDao.save(schedule.getContract());
-           }
-       });
+            transaction(() -> {
+                for (int month : result.getMonthsTouched()) {
+                    Payment p = schedule.getPayment(month);
+                    scheduleDao.updatePaymentProgress(schedule.getScheduleId(), month, p.getAmountPaid(), p.isPaid(), p.getPaidDate());
+                }
+                applicantDao.update(applicant);
+                auditDao.record(applicant, "MAKE_PAYMENT", "CONTRACT", contractId,
+                        "Amount: $" + result.getAmountApplied() + ", months: " + result.getMonthsTouched());
+                if (fullyPaid) {
+                    contractDao.save(schedule.getContract());
+                }
+            });
 
-       setLastMessage("Payment of $" + result.getAmountApplied() + " applied, covering month(s): " + result.getMonthsTouched()
-               + ". Remaining balance: " + applicant.getBalance());
-       if (fullyPaid) {
-           setLastMessage("Congratulations! Loan fully paid. Contract CLOSED.");
-       }
-       } finally {
-           writeLock.unlock();
-       }
+            setLastMessage("Payment of $" + result.getAmountApplied() + " applied, covering month(s): " + result.getMonthsTouched()
+                    + ". Remaining balance: " + applicant.getBalance());
+            if (fullyPaid) {
+                setLastMessage("Congratulations! Loan fully paid. Contract CLOSED.");
+            }
+            return result;
+        } finally {
+            writeLock.unlock();
+        }
     }
 
 
-    public void printMySchedule(int contractId){
-        if(!requireLogin()) return;
-        if(!requirePermission(LoaningSystem.VIEW_OWN_SCHEDULE)) return;
+    public PaymentSchedule getMySchedule(ILoginable actingUser, int contractId){
+        requirePermission(actingUser, VIEW_OWN_SCHEDULE);
 
-         PaymentSchedule schedule = findScheduleByContractId(contractId);
-       if(schedule==null){
-        setLastMessage("Error: No payment schedule found for this contract.");
-        return;
-       }
+        PaymentSchedule schedule = findScheduleByContractId(contractId);
+        if (schedule == null) {
+            throw new NotFoundException("Error: No payment schedule found for this contract.");
+        }
 
-       Applicant applicant = (Applicant) loggedInUser;
-       if(schedule.getContract().getApplicant().getId()!= applicant.getId()){
-         setLastMessage("Error: This is not your contract.");
-         return;
-       }
+        if (schedule.getContract().getApplicant().getId() != actingUser.getId()) {
+            throw new IllegalArgumentException("Error: This is not your contract.");
+        }
 
-
-       schedule.printSchedule();
+        return schedule;
     }
 
-    public void checkDelinquency() {
-        checkDelinquency(LocalDate.now());
+    // Small result holder so checkDelinquency reports what happened without printing.
+    public static final class DelinquencyResult {
+        private final int flaggedLate;
+        private final int defaulted;
+
+        DelinquencyResult(int flaggedLate, int defaulted) {
+            this.flaggedLate = flaggedLate;
+            this.defaulted = defaulted;
+        }
+
+        public int getFlaggedLate() { return flaggedLate; }
+        public int getDefaulted() { return defaulted; }
+    }
+
+    public DelinquencyResult checkDelinquency(ILoginable actingUser) {
+        return checkDelinquency(actingUser, LocalDate.now());
     }
 
     // Package-visible overload so tests can drive delinquency checks against a fixed
     // date instead of depending on the wall clock.
-    void checkDelinquency(LocalDate asOf) {
-        if (!requireLogin()) return;
-        if (!requirePermission(CHECK_DELINQUENCY)) return;
+    DelinquencyResult checkDelinquency(ILoginable actingUser, LocalDate asOf) {
+        requirePermission(actingUser, CHECK_DELINQUENCY);
 
         writeLock.lock();
         try {
@@ -523,258 +515,205 @@ public class LoaningSystem {
                     }
                     if (justDefaulted) {
                         contractDao.save(contract);
-                        auditDao.record(loggedInUser, "CONTRACT_DEFAULTED", "CONTRACT", contract.getContractId(),
+                        auditDao.record(actingUser, "CONTRACT_DEFAULTED", "CONTRACT", contract.getContractId(),
                                 schedule.getConsecutiveLateCount() + " consecutive late payments");
                     }
                 });
-
-                System.out.println("Contract #" + contract.getContractId() + ": " + newlyLate.size()
-                        + " month(s) newly overdue (+" + LATE_FEE + " fee each)"
-                        + (justDefaulted ? " — contract DEFAULTED (" + schedule.getConsecutiveLateCount() + " consecutive late payments)" : ""));
             }
 
-            setLastMessage("Delinquency check complete: " + flaggedLate + " payment(s) newly flagged late, " + defaulted + " contract(s) defaulted.");
+            return new DelinquencyResult(flaggedLate, defaulted);
         } finally {
             writeLock.unlock();
         }
     }
 
 
-    public void rejectContract(int contractId) {
-        if (!requireLogin()) return;
-        if (!requirePermission(REJECT_LOAN)) return;
+    public Contract rejectContract(ILoginable actingUser, int contractId) {
+        requirePermission(actingUser, REJECT_LOAN);
 
-        Contract contract = findContractById(contractId);
-        if (contract == null) {
-            setLastMessage("Error: Contract not found.");
-            return;
-        }
-        if (contract.isApproved()) {
-            setLastMessage("Error: Cannot reject an already approved contract.");
-            return;
-        }
+        // Held across the whole check-then-write, same as approveContract: without this, a
+        // reject could read the contract as not-yet-approved, then — after a concurrent
+        // approveContract lands in between — unconditionally overwrite its status back to
+        // REJECTED, silently clobbering a completed approval (and its already-generated
+        // payment schedule).
+        writeLock.lock();
+        try {
+            Contract contract = findContractById(contractId);
+            if (contract == null) {
+                throw new NotFoundException("Error: Contract not found.");
+            }
+            if (contract.isApproved()) {
+                throw new IllegalArgumentException("Error: Cannot reject an already approved contract.");
+            }
 
-        contract.setStatus("REJECTED");
-        transaction(() -> {
-            contractDao.save(contract);
-            auditDao.record(loggedInUser, "REJECT_CONTRACT", "CONTRACT", contractId, "by " + loggedInUser.getName());
-        });
-        setLastMessage("Contract #" + contractId + " rejected by: " + loggedInUser.getName());
+            contract.setStatus("REJECTED");
+            transaction(() -> {
+                contractDao.save(contract);
+                auditDao.record(actingUser, "REJECT_CONTRACT", "CONTRACT", contractId, "by " + actingUser.getName());
+            });
+            setLastMessage("Contract #" + contractId + " rejected by: " + actingUser.getName());
+            return contract;
+        } finally {
+            writeLock.unlock();
+        }
     }
 
     // ===== Add CoSigner =====
-    public void addCoSigner(int contractId, int staffId) {
-        if (!requireLogin()) return;
-        if (!requirePermission(ADD_COSIGNER)) return;
+    public Contract addCoSigner(ILoginable actingUser, int contractId, int staffId) {
+        requirePermission(actingUser, ADD_COSIGNER);
 
         Contract contract = findContractById(contractId);
         if (contract == null) {
-            setLastMessage("Error: Contract not found.");
-            return;
+            throw new NotFoundException("Error: Contract not found.");
         }
 
         Staff signer = findStaffById(staffId);
         if (signer == null) {
-            setLastMessage("Error: Staff not found.");
-            return;
+            throw new NotFoundException("Error: Staff not found.");
         }
 
         if (!(signer instanceof CreditCommittee)) {
-            setLastMessage("Error: Only CreditCommittee  can co-sign a contract.");
-            return;
+            throw new IllegalArgumentException("Error: Only CreditCommittee  can co-sign a contract.");
         }
 
         boolean added = contract.addCoSigner(signer);
-        if (added) {
-            final Staff finalSigner = signer;
-            transaction(() -> {
-                contractDao.addCoSigner(contractId, finalSigner.getId());
-                auditDao.record(loggedInUser, "ADD_COSIGNER", "CONTRACT", contractId, finalSigner.getName());
-            });
-            setLastMessage("Co-signer added successfully: " + signer.getName());
-        } else {
-            setLastMessage("Error: Could not add co-signer.");
+        if (!added) {
+            throw new IllegalArgumentException("Error: Could not add co-signer.");
         }
+
+        transaction(() -> {
+            contractDao.addCoSigner(contractId, signer.getId());
+            auditDao.record(actingUser, "ADD_COSIGNER", "CONTRACT", contractId, signer.getName());
+        });
+        setLastMessage("Co-signer added successfully: " + signer.getName());
+        return contract;
     }
-    public void deactivateStaff(int staffId) {
-        if (!requireLogin()) return;
-        if (!requirePermission(CREATE_STAFF)) return;
+
+    public Staff deactivateStaff(ILoginable actingUser, int staffId) {
+        requirePermission(actingUser, CREATE_STAFF);
 
         Staff staff = findStaffById(staffId);
         if (staff == null) {
-            setLastMessage("Error: Staff not found.");
-            return;
+            throw new NotFoundException("Error: Staff not found.");
         }
 
         staff.setActive(false);
         transaction(() -> {
             staffDao.update(staff);
-            auditDao.record(loggedInUser, "DEACTIVATE_STAFF", "STAFF", staffId, staff.getName());
+            auditDao.record(actingUser, "DEACTIVATE_STAFF", "STAFF", staffId, staff.getName());
         });
         setLastMessage("Staff deactivated: " + staff.getName());
+        return staff;
     }
 
 
-    public void setNewApprovalLimit(int loanOfficerId , double newAmount){
-        if(!requireLogin()) return;
-        if(!requirePermission(LoaningSystem.SET_NEW_APVL)) return;
+    public LoanOfficer setNewApprovalLimit(ILoginable actingUser, int loanOfficerId , double newAmount){
+        requirePermission(actingUser, SET_NEW_APVL);
 
-        Staff staff=findStaffById(loanOfficerId);
-        if(staff==null){
-            setLastMessage("Error : No staff found");
-            return;
+        Staff staff = findStaffById(loanOfficerId);
+        if (staff == null) {
+            throw new NotFoundException("Error : No staff found");
         }
 
-        if(!(staff instanceof LoanOfficer)){
-            setLastMessage("Error : staff is not a Loan Officerr");
-            return;
+        if (!(staff instanceof LoanOfficer)) {
+            throw new IllegalArgumentException("Error : staff is not a Loan Officerr");
         }
 
         LoanOfficer officer = (LoanOfficer) staff;
         officer.setMaxApprovalLimit(BigDecimal.valueOf(newAmount));
         transaction(() -> {
             staffDao.update(officer);
-            auditDao.record(loggedInUser, "SET_APPROVAL_LIMIT", "STAFF", loanOfficerId, "New limit: $" + newAmount);
+            auditDao.record(actingUser, "SET_APPROVAL_LIMIT", "STAFF", loanOfficerId, "New limit: $" + newAmount);
         });
         setLastMessage("Sucessfully set new approval limit for "+ officer.getName());
-
+        return officer;
     }
 
-    public void setNewRequiredVotes(int votes){
-        if(!requireLogin()) return;
-        if(!requirePermission(LoaningSystem.SET_NEW_REQV)) return;
+    public int setNewRequiredVotes(ILoginable actingUser, int votes){
+        requirePermission(actingUser, SET_NEW_REQV);
 
-        if(votes <= 0){
-            setLastMessage("Error : Required votes must be at least 1");
-            return;
+        if (votes <= 0) {
+            throw new IllegalArgumentException("Error : Required votes must be at least 1");
         }
 
         this.requiredCommitteeVotes = votes;
-        sql(() -> auditDao.record(loggedInUser, "SET_REQUIRED_VOTES", null, null, "New required votes: " + votes));
+        sql(() -> auditDao.record(actingUser, "SET_REQUIRED_VOTES", null, null, "New required votes: " + votes));
         setLastMessage("Successfully set required committee votes to " + votes);
+        return requiredCommitteeVotes;
     }
 
-    public void setNewMaxDebtToIncomeRatio(double ratio){
-        if(!requireLogin()) return;
-        if(!requirePermission(LoaningSystem.SET_NEW_DTI)) return;
+    public double setNewMaxDebtToIncomeRatio(ILoginable actingUser, double ratio){
+        requirePermission(actingUser, SET_NEW_DTI);
 
-        if(ratio <= 0 || ratio > 1){
-            setLastMessage("Error : Debt-to-income ratio must be between 0 and 1 (e.g. 0.40 for 40%)");
-            return;
+        if (ratio <= 0 || ratio > 1) {
+            throw new IllegalArgumentException("Error : Debt-to-income ratio must be between 0 and 1 (e.g. 0.40 for 40%)");
         }
 
         this.maxDebtToIncomeRatio = ratio;
-        sql(() -> auditDao.record(loggedInUser, "SET_MAX_DTI", null, null, "New max debt-to-income ratio: " + ratio));
+        sql(() -> auditDao.record(actingUser, "SET_MAX_DTI", null, null, "New max debt-to-income ratio: " + ratio));
         setLastMessage("Successfully set max debt-to-income ratio to " + (ratio * 100) + "%");
+        return maxDebtToIncomeRatio;
     }
 
-    public void setNewUserName(String username ,String newUsername ,  String password){
-        if(!requireLogin())  return;
-        if(!requirePermission(LoaningSystem.SET_NEW_NAME)) return;
+    public ILoginable setNewUserName(ILoginable actingUser, String username ,String newUsername ,  String password){
+        requirePermission(actingUser, SET_NEW_NAME);
 
-
-        if(loggedInUser.getUsername().equalsIgnoreCase(username) && loggedInUser.checkPassword(password)){
-
-                if (!checkIfUsernameAvailable(newUsername)) {
-                    throw new InputMismatchException("Error : username already taken");
-                }
-                loggedInUser.setUsername(newUsername);
-                persistLoggedInUser("CHANGE_USERNAME", "New username: " + newUsername);
-                System.out.println("Successfully change username ");
-                return;
+        if (actingUser.getUsername().equalsIgnoreCase(username) && actingUser.checkPassword(password)) {
+            if (!checkIfUsernameAvailable(newUsername)) {
+                throw new InputMismatchException("Error : username already taken");
             }
-            throw new InputMismatchException("Error : Authentication failed");
-        }
-
-    public void setNewPassword(String name , String password , String  newPassword){
-        if(!requireLogin()) return;
-        if(!requirePermission(LoaningSystem.SET_NEW_PASSWORD)) return ;
-
-        if(loggedInUser.getUsername().equals(name) && loggedInUser.checkPassword(password)){
-                loggedInUser.setPassword(newPassword);
-                persistLoggedInUser("CHANGE_PASSWORD", null);
-                System.out.println("Successfully change your password");
-                return;
+            actingUser.setUsername(newUsername);
+            persistUser(actingUser, "CHANGE_USERNAME", "New username: " + newUsername);
+            setLastMessage("Successfully change username ");
+            return actingUser;
         }
         throw new InputMismatchException("Error : Authentication failed");
     }
 
-    private void persistLoggedInUser(String action, String details) {
+    public void setNewPassword(ILoginable actingUser, String name , String password , String  newPassword){
+        requirePermission(actingUser, SET_NEW_PASSWORD);
+
+        if (actingUser.getUsername().equals(name) && actingUser.checkPassword(password)) {
+            actingUser.setPassword(newPassword);
+            persistUser(actingUser, "CHANGE_PASSWORD", null);
+            setLastMessage("Successfully change your password");
+            return;
+        }
+        throw new InputMismatchException("Error : Authentication failed");
+    }
+
+    private void persistUser(ILoginable user, String action, String details) {
         transaction(() -> {
-            if (loggedInUser instanceof Staff staff) {
+            if (user instanceof Staff staff) {
                 staffDao.update(staff);
-            } else if (loggedInUser instanceof Applicant applicant) {
+            } else if (user instanceof Applicant applicant) {
                 applicantDao.update(applicant);
             }
-            auditDao.record(loggedInUser, action, null, null, details);
+            auditDao.record(user, action, null, null, details);
         });
     }
 
 
-    public void printStaffs() {
-        List<Staff> staffs = sql(staffDao::findAll);
-        System.out.println("\n--- Staffs (" + staffs.size() + ") ---");
-        if (staffs.isEmpty()) {
-            System.out.println("No staff found.");
-            return;
-        }
-        for (int i = 0; i < staffs.size(); i++) {
-            System.out.println((i + 1) + ") " + staffs.get(i));
-        }
+    public List<Staff> getAllStaff() {
+        return sql(staffDao::findAll);
     }
 
-    public void printApplicants() {
-        List<Applicant> applicants = sql(applicantDao::findAll);
-        System.out.println("\n--- Applicants (" + applicants.size() + ") ---");
-        if (applicants.isEmpty()) {
-            System.out.println("No applicants found.");
-            return;
-        }
-        for (int i = 0; i < applicants.size(); i++) {
-            System.out.println((i + 1) + ") " + applicants.get(i));
-        }
+    public List<Applicant> getAllApplicants() {
+        return sql(applicantDao::findAll);
     }
 
-    public void printContracts() {
-        List<Contract> contracts = sql(contractDao::findAll);
-        System.out.println("\n--- Contracts (" + contracts.size() + ") ---");
-        if (contracts.isEmpty()) {
-            System.out.println("No contracts found.");
-            return;
-        }
-        for (int i = 0; i < contracts.size(); i++) {
-            System.out.println((i + 1) + ") " + contracts.get(i));
-        }
+    public List<Contract> getAllContracts() {
+        return sql(contractDao::findAll);
     }
 
-    public void printAuditLog() {
-        if (!requireLogin()) return;
-        if (!requirePermission(VIEW_AUDIT_LOG)) return;
-
-        List<AuditEntry> entries = sql(auditDao::findAll);
-        System.out.println("\n--- Audit Log (" + entries.size() + ") ---");
-        if (entries.isEmpty()) {
-            System.out.println("No audit entries found.");
-            return;
-        }
-        for (AuditEntry entry : entries) {
-            System.out.println(entry);
-        }
+    public List<AuditEntry> getAuditLog(ILoginable actingUser) {
+        requirePermission(actingUser, VIEW_AUDIT_LOG);
+        return sql(auditDao::findAll);
     }
 
-    public void printAuditLogForContract(int contractId) {
-        if (!requireLogin()) return;
-        if (!requirePermission(VIEW_AUDIT_LOG)) return;
-
-        List<AuditEntry> entries = sql(() -> auditDao.findBySubject("CONTRACT", contractId));
-        System.out.println("\n--- Audit Log for Contract #" + contractId + " (" + entries.size() + ") ---");
-        if (entries.isEmpty()) {
-            System.out.println("No audit entries found for this contract.");
-            return;
-        }
-        for (AuditEntry entry : entries) {
-            System.out.println(entry);
-        }
+    public List<AuditEntry> getAuditLogForContract(ILoginable actingUser, int contractId) {
+        requirePermission(actingUser, VIEW_AUDIT_LOG);
+        return sql(() -> auditDao.findBySubject("CONTRACT", contractId));
     }
 
     // ===== Find Helpers =====
@@ -794,17 +733,13 @@ public class LoaningSystem {
         return sql(() -> scheduleDao.findByContractId(contractId));
     }
 
-    private boolean requireLogin() {
-        if (loggedInUser == null) {
-            setLastMessage("Action denied: please login first.");
-            return false;
+    private void requireLogin(ILoginable actingUser) {
+        if (actingUser == null) {
+            throw new LogginException("Action denied: please login first.");
         }
-        if (!loggedInUser.isActive()) {
-            loggedInUser = null;
-            setLastMessage("Action denied: User is inactive. Auto logout.");
-            return false;
+        if (!actingUser.isActive()) {
+            throw new LogginException("Action denied: User is inactive.");
         }
-        return true;
     }
 
     public  boolean checkIfUsernameAvailable(String username){
@@ -819,12 +754,11 @@ public class LoaningSystem {
 
 
 
-    private boolean requirePermission(String action) {
-        if (!loggedInUser.can(action)) {
-            setLastMessage("Error: Permission denied for action: " + action);
-            return false;
+    private void requirePermission(ILoginable actingUser, String action) {
+        requireLogin(actingUser);
+        if (!actingUser.can(action)) {
+            throw new LogginException("Error: Permission denied for action: " + action);
         }
-        return true;
     }
 
     public boolean isBlank(String s) {
@@ -849,18 +783,24 @@ public class LoaningSystem {
     private interface SqlAction { void run() throws SQLException; }
 
     private <T> T sql(SqlSupplier<T> supplier) {
+        writeLock.lock();
         try {
             return supplier.get();
         } catch (SQLException e) {
             throw new DataAccessException(e);
+        } finally {
+            writeLock.unlock();
         }
     }
 
     private void sql(SqlAction action) {
+        writeLock.lock();
         try {
             action.run();
         } catch (SQLException e) {
             throw new DataAccessException(e);
+        } finally {
+            writeLock.unlock();
         }
     }
 
@@ -868,6 +808,7 @@ public class LoaningSystem {
     // (e.g. schedule insert failing after the contract row was already updated)
     // can't leave the database in an inconsistent state.
     private void transaction(SqlAction action) {
+        writeLock.lock();
         try {
             connection.setAutoCommit(false);
             action.run();
@@ -886,6 +827,7 @@ public class LoaningSystem {
             } catch (SQLException ignored) {
                 // Connection is likely unusable at this point; nothing more we can do here.
             }
+            writeLock.unlock();
         }
     }
 }
