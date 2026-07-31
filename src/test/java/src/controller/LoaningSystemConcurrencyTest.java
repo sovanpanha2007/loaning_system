@@ -2,8 +2,7 @@ package src.controller;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import java.io.ByteArrayOutputStream;
-import java.io.PrintStream;
+import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -12,16 +11,20 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import src.interfaces.ILoginable;
+import src.model.Contract;
+
 // Proves LoaningSystem's writeLock actually closes the check-then-write races it exists
 // for: without it, concurrent threads can each pass a business-rule check before any of
 // them has written, letting the borrowing cap be exceeded or a payment be deducted twice.
+// Since LoaningSystem is now a stateless, thread-safe service (no more per-caller session
+// field), these tests call it exactly the way concurrent web requests sharing one singleton
+// instance would.
 class LoaningSystemConcurrencyTest {
 
     private Path dbFile;
@@ -44,10 +47,10 @@ class LoaningSystemConcurrencyTest {
 
     @Test
     void concurrentCreateContractNeverLetsTotalBorrowedExceedTheCap() throws InterruptedException {
-        system.login("Admin123", "1234");
-        system.createApplicant("Jane Doe", "jane", "011111111", "pass1234", 30, 10000, "F", 0);
-        int applicantId = loginAndCaptureId("jane", "pass1234");
-        system.login("jane", "pass1234");
+        ILoginable admin = system.authenticate("Admin123", "1234");
+        system.createApplicant(admin, "Jane Doe", "jane", "011111111", "pass1234", 30, 10000, "F", 0);
+        ILoginable jane = system.authenticate("jane", "pass1234");
+        int applicantId = jane.getId();
 
         int threadCount = 10;
         ExecutorService pool = Executors.newFixedThreadPool(threadCount);
@@ -60,7 +63,7 @@ class LoaningSystemConcurrencyTest {
                 ready.countDown();
                 try {
                     go.await();
-                    system.createContract(applicantId, 600, 1);
+                    system.createContract(jane, applicantId, 600, 1);
                     outcomes.add(true);
                 } catch (IllegalArgumentException e) {
                     outcomes.add(false);
@@ -83,23 +86,19 @@ class LoaningSystemConcurrencyTest {
 
     @Test
     void concurrentPayoffAttemptsNeverDeductMoreThanWhatWasOwed() throws Exception {
-        system.login("Admin123", "1234");
-        system.createApplicant("Jane Doe", "jane", "011111111", "pass1234", 30, 10000, "F", 0);
-        int applicantId = loginAndCaptureId("jane", "pass1234");
+        ILoginable admin = system.authenticate("Admin123", "1234");
+        system.createApplicant(admin, "Jane Doe", "jane", "011111111", "pass1234", 30, 10000, "F", 0);
+        ILoginable jane = system.authenticate("jane", "pass1234");
+        int applicantId = jane.getId();
 
-        system.login("jane", "pass1234");
-        system.createContract(applicantId, 1200, 1);
-        int contractId = parseTrailingId(system.getLastMessage());
+        Contract contract = system.createContract(jane, applicantId, 1200, 1);
+        int contractId = contract.getContractId();
 
-        system.login("Admin123", "1234");
-        system.createStaff("Larry Officer", "larry", "022222222", 28, "passL", 3000, LoaningSystem.LOAN_OFFICER);
-        system.login("larry", "passL");
-        system.approveContract(contractId);
+        system.createStaff(admin, "Larry Officer", "larry", "022222222", 28, "passL", 3000, LoaningSystem.LOAN_OFFICER);
+        ILoginable larry = system.authenticate("larry", "passL");
+        system.approveContract(larry, contractId);
 
-        system.login("Admin123", "1234");
-        system.addBalanceforApplicant(applicantId, 2000);
-
-        system.login("jane", "pass1234");
+        system.addBalanceforApplicant(admin, applicantId, 2000);
 
         int threadCount = 8;
         ExecutorService pool = Executors.newFixedThreadPool(threadCount);
@@ -114,7 +113,9 @@ class LoaningSystemConcurrencyTest {
                     // Each thread offers more than the whole loan (1232.73 total) costs, all at
                     // once. Only the first to actually land should have its payment applied —
                     // everyone else must see the contract already fully paid and change nothing.
-                    system.makePayment(contractId, 1300);
+                    system.makePayment(jane, contractId, 1300);
+                } catch (IllegalArgumentException ignored) {
+                    // Expected for every thread but the one that actually lands the payoff.
                 } catch (InterruptedException ignored) {
                     Thread.currentThread().interrupt();
                 }
@@ -129,33 +130,6 @@ class LoaningSystemConcurrencyTest {
         // reducing-balance amortized over 12 months at 5%). If the lock didn't serialize
         // makePayment, more than one of the 8 threads could have applied a payoff concurrently,
         // deducting far more than the loan actually cost.
-        assertEquals("Your balance : 767.27$", captureBalancePrint());
-    }
-
-    private int loginAndCaptureId(String username, String password) {
-        system.login(username, password);
-        int id = system.getLoggedInUser().getId();
-        system.logout();
-        return id;
-    }
-
-    private int parseTrailingId(String message) {
-        Matcher m = Pattern.compile("(\\d+)$").matcher(message.trim());
-        if (!m.find()) {
-            throw new IllegalStateException("Could not find a trailing id in: " + message);
-        }
-        return Integer.parseInt(m.group(1));
-    }
-
-    private String captureBalancePrint() {
-        PrintStream originalOut = System.out;
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        System.setOut(new PrintStream(buffer));
-        try {
-            system.viewMyBalance();
-        } finally {
-            System.setOut(originalOut);
-        }
-        return buffer.toString().trim();
+        assertEquals(new BigDecimal("767.27"), system.getMyBalance(jane));
     }
 }
